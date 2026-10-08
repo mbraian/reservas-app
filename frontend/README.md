@@ -59,3 +59,20 @@ src/components/       grilla de reservas, selector de fecha y modales
 nginx/templates/      configuración de nginx para servir dist/
 vite.config.js        puerto de desarrollo y proxy hacia la API
 ```
+
+### Justificación técnica: Uso obligatorio de `NGINX_ENVSUBST_FILTER` en el Dockerfile
+
+En la imagen `reservas-frontend`, la configuración de Nginx se parametriza en tiempo de ejecución utilizando una plantilla procesada por el script de inicio de la imagen base (`20-envsubst-on-templates.sh`).
+
+La variable de entorno `NGINX_ENVSUBST_FILTER=^API_` es de carácter **estrictamente obligatorio** debido a que la herramienta `envsubst` reemplaza por defecto cualquier patrón que comience con el signo `$` en el archivo procesado.
+
+En un archivo de configuración de Nginx conviven dos tipos de variables:
+1. **Variables de entorno de la infraestructura:** `${API_HOST}` y `${API_PORT}`, destinadas a resolverse dinámicamente según el entorno.
+2. **Variables internas del servidor web Nginx:** `$uri`, `$host` y `$proxy_add_x_forwarded_for`, necesarias para el enrutamiento de la SPA y el reenvío de encabezados HTTP hacia el backend.
+
+Si no se define `NGINX_ENVSUBST_FILTER`:
+* `envsubst` intenta resolver las variables internas de Nginx contra el entorno del sistema operativo.
+* Al no existir variables del sistema llamadas `uri` o `host`, son sustituidas por cadenas vacías `""`.
+* Esto genera una configuración sintácticamente inválida o mutilada de forma silenciosa, rompiendo directivas críticas como `try_files` y la cabecera `Host` del proxy inverso.
+
+Al definir `NGINX_ENVSUBST_FILTER=^API_`, se instruye a \`envsubst\` a sustituir exclusivamente aquellas variables cuyo nombre inicie con el prefijo `API_`, preservando intactas las variables nativas de Nginx.
