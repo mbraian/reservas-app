@@ -1,0 +1,64 @@
+services: # los contenedores: lo que antes ← era cada docker run
+  reservas-db:
+    image: mysql:8.4
+    cap_drop: [ALL]
+    cap_add:
+    - SETGID
+    - SETUID
+    - DAC_OVERRIDE
+    environment:
+      MYSQL_ROOT_PASSWORD: reservas_root_pass
+      MYSQL_DATABASE: reservasdb
+      MYSQL_USER: reservas_user
+      MYSQL_PASSWORD: reservas_pass
+    volumes: [reservas-db-data:/var/lib/mysql]
+    networks: [reservas-net]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  reservas-api:
+    build: {context: ./backend}
+    image: reservas-api:v4
+    cap_drop: [ALL]
+
+    ports: ["3030:3000"]
+    environment:
+      PORT: 3000
+      DB_HOST: reservas-db
+      DB_PORT: 3306
+      DB_NAME: reservasdb
+      DB_USER: reservas_user
+      DB_PASSWORD: reservas_pass
+      APP_VERSION: v4
+      SEED_DEMO: true
+    networks: [reservas-net]
+    depends_on:
+      reservas-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+
+  reservas-frontend:
+    build: { context: ./frontend } # ← construye en vez de bajar
+    image: reservas-frontend:v4 # ← y etiqueta el resultado
+    cap_drop: [ALL]
+
+    ports: ["3000:8080"]
+    environment:
+      API_HOST: reservas-api
+      API_PORT: 3000
+    networks: [reservas-net]
+    depends_on:
+      reservas-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]      
+
+networks: # ← lo que antes era docker network create
+  reservas-net: { name: reservas-net }
+volumes: # ← lo que antes era docker volume create
+  reservas-db-data: { name: reservas-db-data }
