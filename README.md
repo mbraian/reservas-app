@@ -231,8 +231,115 @@ En la orquestación avanzada con Kubernetes, la gestión de configuración se de
 
 ---
 
-\### Punto 10: Aplicación del Principio de Menor Privilegio (\`cap\_drop\` / \`cap\_add\`) Se aplicó la directiva \`cap\_drop: [ALL]\` a los tres servicios de la arquitectura para despojarlos de todas las capacidades por defecto del Kernel de Linux. #### 1\. Comportamiento de las imágenes propias (\`reservas-api\` y \`reservas-frontend\`) Ambos contenedores continuaron funcionando normalmente en estado \`healthy\` sin requerir ninguna capability. \* \*\*Causa:\*\* Fueron construidos en la Semana 2 bajo usuarios no privilegiados (\`USER node\` UID 1000 y \`USER nginx\` UID 101) y escuchan en puertos no privilegiados (&gt;1024). Al no ejecutar operaciones administrativas sobre el sistema de archivos ni cambiar de identidad en tiempo de ejecución, operan de forma segura con cero capabilities. #### 2\. Diagnóstico incremental de \`reservas-db\` (MySQL 8.4) Al aplicar \`cap\_drop: [ALL]\`, el contenedor de la base finalizó con código de error (\`exited (1)\`). Se diagnosticaron y agregaron de forma granular las capabilities requeridas leyendo el registro de error en cada paso: \* \*\*Paso 1:\*\* El comando inicial de verificación falló con: \`[ERROR] [MY-010126] [Server] setgid: Operation not permitted\` \* \*\*Solución:\*\* Se agregó \`cap\_add: [SETGID]\`, permitiendo al proceso invocar \`setgid()\` para cambiar al grupo de sistema \`mysql\`. \* \*\*Paso 2:\*\* Al reintentar, el proceso avanzó pero falló en la mutación de usuario: \`[ERROR] ... setuid: Operation not permitted\` \* \*\*Solución:\*\* Se agregó \`cap\_add: [SETGID, SETUID]\`, permitiendo invocar \`setuid()\` para adoptar la identidad del usuario sin privilegios \`mysql\` (UID 999). \* \*\*Resultado final:\*\* Con únicamente \`SETGID\` y \`SETUID\`, el motor MySQL 8.4 inició el servidor definitivo, abrió el puerto 3306 y alcanzó el estado \`healthy\`. #### 3\. ¿Por qué la base de datos requiere capabilities y las otras dos capas no? A diferencia de nuestras aplicaciones Node.js y Nginx, que nacen directamente con su usuario final asignado en el Dockerfile, la imagen oficial de MySQL está diseñada para gestionar la inicialización de volúmenes persistentes. Para ello, su script de entrada arranca inicialmente como \`root\` dentro del contenedor y luego traspasa la ejecución del proceso al usuario \`mysql\`. Esa transición de privilegios en tiempo de ejecución (\`root\` -&gt; \`mysql\`) exige llamadas protegidas al Kernel (\`setuid\`/\`setgid\`) que requieren explícitamente dichas capacidades.
+### Punto 10: Aplicación del Principio de Menor Privilegio (`cap_drop` / `cap_add`)
+
+Se aplicó la directiva `cap_drop: [ALL]` a los tres servicios de la arquitectura para despojarlos de todas las capacidades por defecto del Kernel de Linux.
+
+#### 1. Comportamiento de las imágenes propias (`reservas-api` y `reservas-frontend`)
+
+Ambos contenedores continuaron funcionando normalmente en estado `healthy` sin requerir ninguna capability.
+
+* **Causa:** Fueron construidos en la Semana 2 bajo usuarios no privilegiados (`USER node` UID 1000 y `USER nginx` UID 101) y escuchan en puertos no privilegiados (>1024). Al no ejecutar operaciones administrativas sobre el sistema de archivos ni cambiar de identidad en tiempo de ejecución, operan de forma segura con cero capabilities.
+
+#### 2. Diagnóstico incremental de `reservas-db` (MySQL 8.4)
+
+Al aplicar `cap_drop: [ALL]`, el contenedor de la base finalizó con código de error (`exited (1)`). Se diagnosticaron y agregaron de forma granular las capabilities requeridas leyendo el registro de error en cada paso:
+
+* **Paso 1:** El comando inicial de verificación falló con: `[ERROR] [MY-010126] [Server] setgid: Operation not permitted`
+  * **Solución:** Se agregó `cap_add: [SETGID]`, permitiendo al proceso invocar `setgid()` para cambiar al grupo de sistema `mysql`.
+* **Paso 2:** Al reintentar, el proceso avanzó pero falló en la mutación de usuario: `[ERROR] ... setuid: Operation not permitted`
+  * **Solución:** Se agregó `cap_add: [SETGID, SETUID]`, permitiendo invocar `setuid()` para adoptar la identidad del usuario sin privilegios `mysql` (UID 999).
+* **Resultado final:** Con únicamente `SETGID` y `SETUID`, el motor MySQL 8.4 inició el servidor definitivo, abrió el puerto 3306 y alcanzó el estado `healthy`.
+
+#### 3. ¿Por qué la base de datos requiere capabilities y las otras dos capas no?
+
+A diferencia de nuestras aplicaciones Node.js y Nginx, que nacen directamente con su usuario final asignado en el Dockerfile, la imagen oficial de MySQL está diseñada para gestionar la inicialización de volúmenes persistentes. Para ello, su script de entrada arranca inicialmente como `root` dentro del contenedor y luego traspasa la ejecución del proceso al usuario `mysql`. Esa transición de privilegios en tiempo de ejecución (`root` -> `mysql`) exige llamadas protegidas al Kernel (`setuid`/`setgid`) que requieren explícitamente dichas capacidades.
 
 ---
 
-\### Punto 11 - Comparativa Arquitectónica: docker-compose.yml vs docker run (Semana 3 vs Semana 4) El paso de la ejecución imperativa mediante comandos individuales \`docker run\` hacia la orquestación declarativa con \`docker compose\` redefine la gestión de la infraestructura de \`reservas-app\`. A continuación se detalla qué desapareció, qué apareció y la correspondencia directa entre ambas técnicas. ### 1\. ¿Qué desapareció? \* \*\*La memoria del operador y el orden manual:\*\* En la Semana 3, el orden de inicio (\`red ──► volumen ──► db ──► api ──► frontend\`) residía exclusivamente en la cabeza de quien operaba la terminal. Un error en la secuencia rompía la aplicación. En Compose, el orden lo resuelve el orquestador mediante un Grafo Acíclico Dirigido (DAG). \* \*\*La espera humana activa:\*\* Se eliminó la necesidad de monitorear manualmente \`docker logs -f reservas-db\` esperando el mensaje \`port: 3306\` para recién escribir el siguiente comando. \* \*\*Los comandos imperativos fragmentados:\*\* Desaparecieron los comandos independientes \`docker network create\`, \`docker volume create\`, \`docker build\` y los tres \`docker run\` cargados de banderas propensas a errores tipográficos. \* \*\*El flag \`--name\` manual:\*\* Compose asume el control del nombrado lógico a través de la clave del servicio, garantizando nombres consistentes para el DNS interno. \* \*\*El acoplamiento al ciclo de vida manual:\*\* Se terminó el problema de contenedores huérfanos o conexiones residuales rotas tras reiniciar la base de datos; el ciclo de vida de todo el stack se unifica en una sola entidad. --- ### 2\. ¿Qué apareció? \* \*\*Infraestructura como Código (IaC) versionable:\*\* El archivo \`docker-compose.yml\` se convierte en la única fuente de verdad (\*single source of truth\*), convive con el código fuente en el repositorio Git y se audita en revisiones de código (Pull Requests). \* \*\*Orquestación sincronizada por salud real (\`depends\_on\` + \`condition: service\_healthy\`):\*\* Las compuertas de bloqueo ya no esperan un estado de proceso trivial (\`Started\`), sino que verifican que la capa inferior esté realmente lista para recibir tráfico (\`healthy\`). \* \*\*Pruebas de salud continuas (\*Healthchecks\*):\*\* Monitorización automatizada en tiempo de ejecución (ping TCP en MySQL, \`fetch\` nativo en Node.js y \`wget\` en Alpine Nginx) sin instalar dependencias redundantes como \`curl\`. \* \*\*Construcción y etiquetado declarativo (\`build:\` + \`image:\`):\*\* Compose se encarga de compilar las imágenes locales faltantes y versionarlas antes de levantar los servicios mediante \`docker compose up --build\`. \* \*\*Principio de menor privilegio granular (\`cap\_drop\` / \`cap\_add\`):\*\* Se despojaron los contenedores de las 14 capacidades por defecto del Kernel de Linux, restituyendo en la base de datos únicamente las llamadas indispensables (\`SETGID\`, \`SETUID\`, \`DAC\_OVERRIDE\`). \* \*\*Contrato de configuración estandarizado:\*\* Separación formal entre variables de entorno y manifiestos a través de la tríada \`.env.example\`, \`.env\` y \`.gitignore\`. \* \*\*Ciclo de vida atómico y seguro (\`up\` / \`down\` / \`down -v\`):\*\* La capacidad de levantar el entorno completo con un comando y destruirlo de forma predecible protegiendo la persistencia del dato. --- ### 3\. Matriz de Traducción de Infraestructura | Concepto de Infraestructura | Semana 3: Enfoque Manual (\`docker run\` / CLI) | Semana 4: Enfoque Declarativo (\`docker-compose.yml\`) | Rol en la Arquitectura | | :--- | :--- | :--- | :--- | | \*\*Definición de servicio\*\* | \`docker run -d --name
+### Punto 11 - Comparativa Arquitectónica: docker-compose.yml vs docker run (Semana 3 vs Semana 4)
+
+El paso de la ejecución imperativa mediante comandos individuales `docker run` hacia la orquestación declarativa con `docker compose` redefine la gestión de la infraestructura de `reservas-app`. A continuación se detalla qué desapareció, qué apareció y la correspondencia directa entre ambas técnicas.
+
+#### 1. ¿Qué desapareció?
+
+* **La memoria del operador y el orden manual:** En la Semana 3, el orden de inicio (`red ──► volumen ──► db ──► api ──► frontend`) residía exclusivamente en la cabeza de quien operaba la terminal. Un error en la secuencia rompía la aplicación. En Compose, el orden lo resuelve el orquestador mediante un Grafo Acíclico Dirigido (DAG).
+* **La espera humana activa:** Se eliminó la necesidad de monitorear manualmente `docker logs -f reservas-db` esperando el mensaje `port: 3306` para recién escribir el siguiente comando.
+* **Los comandos imperativos fragmentados:** Desaparecieron los comandos independientes `docker network create`, `docker volume create`, `docker build` y los tres `docker run` cargados de banderas propensas a errores tipográficos.
+* **El flag `--name` manual:** Compose asume el control del nombrado lógico a través de la clave del servicio, garantizando nombres consistentes para el DNS interno.
+* **El acoplamiento al ciclo de vida manual:** Se terminó el problema de contenedores huérfanos o conexiones residuales rotas tras reiniciar la base de datos; el ciclo de vida de todo el stack se unifica en una sola entidad.
+
+---
+
+#### 2. ¿Qué apareció?
+
+* **Infraestructura como Código (IaC) versionable:** El archivo `docker-compose.yml` se convierte en la única fuente de verdad (*single source of truth*), convive con el código fuente en el repositorio Git y se audita en revisiones de código (Pull Requests).
+* **Orquestación sincronizada por salud real (`depends_on` + `condition: service_healthy`):** Las compuertas de bloqueo ya no esperan un estado de proceso trivial (`Started`), sino que verifican que la capa inferior esté realmente lista para recibir tráfico (`healthy`).
+* **Pruebas de salud continuas (*Healthchecks*):** Monitorización automatizada en tiempo de ejecución (ping TCP en MySQL, `fetch` nativo en Node.js y `wget` en Alpine Nginx) sin instalar dependencias redundantes como `curl`.
+* **Construcción y etiquetado declarativo (`build:` + `image:`):** Compose se encarga de compilar las imágenes locales faltantes y versionarlas antes de levantar los servicios mediante `docker compose up --build`.
+* **Principio de menor privilegio granular (`cap_drop` / `cap_add`):** Se despojaron los contenedores de las 14 capacidades por defecto del Kernel de Linux, restituyendo en la base de datos únicamente las llamadas indispensables (`SETGID`, `SETUID`, `DAC_OVERRIDE`).
+* **Contrato de configuración estandarizado:** Separación formal entre variables de entorno y manifiestos a través de la tríada `.env.example`, `.env` y `.gitignore`.
+* **Ciclo de vida atómico y seguro (`up` / `down` / `down -v`):** La capacidad de levantar el entorno completo con un comando y destruirlo de forma predecible protegiendo la persistencia del dato.
+
+---
+
+#### 3. Matriz de Traducción de Infraestructura
+
+| Concepto de Infraestructura | Semana 3: Enfoque Manual (`docker run` / CLI) | Semana 4: Enfoque Declarativo (`docker-compose.yml`) | Rol en la Arquitectura |
+| :--- | :--- | :--- | :--- |
+| **Definición de servicio** | `docker run -d --name` | | |
+
+
+---
+
+## Cheatsheet de kubectl — Semana 5
+A continuación se detallan los diez comandos de `kubectl` efectivamente utilizados durante el despliegue, inspección y diagnóstico de la aplicación `reservas-app` sobre el clúster [1, 3]:
+| # | Comando | Descripción y Uso Técnico |
+|---|---|---|
+| **1** | `kubectl config current-context` | Muestra el contexto activo del clúster. Se ejecuta como medida de seguridad inicial para verificar a qué clúster y usuario se enviarán las órdenes antes de aplicar cualquier manifiesto. |
+| **2** | `kubectl config set-context --current --namespace=reservas-app` | Establece el namespace `reservas-app` como el namespace por defecto del contexto actual. Evita tener que incluir la bandera `-n reservas-app` en cada comando posterior. |
+| **3** | `kubectl run reservas-db --image=mysql:8.4 --dry-run=client -o yaml > k8s/pod-reservas-db.yaml` | Genera la estructura base de un Pod en formato YAML sin crearlo realmente en el clúster (`--dry-run=client`). Sirve como puente imperativo-declarativo para no redactar manifiestos desde cero. |
+| **4** | `kubectl apply -f k8s/pod-reservas-api.yaml` | Aplica declarativamente el estado deseado definido en el manifiesto YAML. Es una operación idempotente: si el recurso no existe lo crea, y si no cambió responde `unchanged`. |
+| **5** | `kubectl get pods` | Lista los Pods del namespace activo mostrando su estado general (`STATUS`), cantidad de contenedores listos (`READY`), número de reinicios (`RESTARTS`) y tiempo de ejecución (`AGE`). |
+| **6** | `kubectl get pods -o wide` | Muestra la tabla extendida de Pods, agregando la dirección IP interna asignada a cada Pod (`10.244.0.x`) y el nodo worker específico donde fue programado. |
+| **7** | `kubectl get pods -w` | Mantiene la terminal en escucha continua para observar en tiempo real los cambios y transiciones de estado de los Pods (`Pending` -> `ContainerCreating` -> `Running` -> `CrashLoopBackOff`). |
+| **8** | `kubectl describe pod reservas-api` | Muestra los metadatos detallados del Pod, el estado de sus contenedores y el historial de `Events` del `kubelet`. Es el comando clave para diagnosticar errores de descarga de imagen como `ImagePullBackOff`. |
+| **9** | `kubectl logs reservas-api --previous` | Muestra los registros de la salida estándar (`stdout`/`stderr`) de la instancia anterior del contenedor que colapsó. Es indispensable para descubrir fallas de código o de DNS (`ENOTFOUND`) cuando el Pod entra en `CrashLoopBackOff`. |
+| **10** | `kubectl port-forward pod/reservas-api 3001:3000` | Abre un túnel TCP local desde la máquina de desarrollo (`3001`) hacia el puerto interno del Pod (`3000`). Permite probar y depurar la aplicación con `curl` o desde el navegador sin exponer un Service. |
+
+---
+
+### Comando Adicional de Comprobación Arquitectónica
+* **`kubectl delete pod reservas-api`**: Permite eliminar un Pod del clúster. Se utilizó para verificar la mortalidad de los **Pods sueltos**: al no existir un controlador de nivel superior (como un `Deployment`), el Pod eliminado desaparece definitivamente y nadie lo vuelve a crear.
+
+---
+---
+
+## Comparativa Arquitectónica: `docker-compose.yml` (Semana 4) vs. Manifiestos de Kubernetes (Semana 5)
+
+En la transición desde la orquestación local con Docker Compose hacia la orquestación distribuida en Kubernetes, la aplicación de tres capas (`reservas-app`) sufrió una reestructuración fundamental en la forma de declarar y ejecutar sus componentes.
+A continuación, se sintetizan las equivalencias, cambios y vacíos arquitectónicos observados al comparar el manifiesto `docker-compose.yml` de la cuarta semana con los manifiestos YAML de Pods sueltos (`pod-reservas-db.yaml`, `pod-reservas-api.yaml` y `pod-reservas-frontend.yaml`):
+
+---
+
+### 1. Qué se Conservó
+* **Inyección de Variables de Entorno (`env`):** El mecanismo para configurar las aplicaciones en tiempo de ejecución se mantiene idéntico conceptualmente. Las claves bajo la sección `environment:` de Compose se tradujeron directamente al bloque `env:` en la especificación de los contenedores de Kubernetes (`MYSQL_*`, `DB_HOST`, `PORT`, `API_HOST`).
+* **Imágenes de Contenedor:** Se conservó la referencia a las imágenes de contenedor (`image:`), sus etiquetas/tags específicas (`:v1`, `:8.4`) y los repositorios remotos donde están alojadas.
+* **Puertos Internos del Contenedor:** La declaración del puerto interno sobre el cual escucha el proceso (`containerPort:` en Kubernetes) equivale al puerto de destino expuesto por la aplicación en Compose.
+
+---
+
+### 2. Qué Desapareció
+* **La Cláusula de Redes (`networks:`):** En Docker Compose era obligatorio declarar una red custom (`reservas-net`) e interconectar cada servicio. En Kubernetes esta cláusula desaparece porque la red CNI del clúster provee un plano de red integrado donde todos los Pods reciben su propia dirección IP privada y pueden comunicarse directamente.
+* **El Orden de Arranque (`depends_on`):** Kubernetes no soporta `depends_on` ni la condición `service_healthy`. La ordenación del arranque se delega a reintentos internos en el código de la aplicación o a sondas de disponibilidad (`readinessProbe`).
+* **Construcción Local de Imágenes (`build:`):** Docker Compose permitía construir imágenes al vuelo desde código fuente local (`build: ./backend`). El clúster de Kubernetes no ve el entorno local de desarrollo; las imágenes deben compilarse, etiquetarse y subirse previamente a un Container Registry público o privado (`docker push`).
+* **Mapeo de Puertos al Host (`ports:`):** En Kubernetes los Pods sueltos no exponen puertos directamente en la máquina anfitriona; el acceso externo mediante puertos del host se gestiona fuera de la especificación del Pod.
+* **El Archivo Monolítico:** Se pasó de un archivo centralizado (`docker-compose.yml`) a manifiestos YAML independientes y desacoplados por cada recurso (`pod-reservas-db.yaml`, `pod-reservas-api.yaml`, `pod-reservas-frontend.yaml`).
+
+---
+
+### 3. Qué Todavía Falta (Desafíos para la Semana 6)
+* **Objetos `Service` (Resolución DNS e IPs Estables):** Falta la capa de abstracción de red que registre nombres DNS estables (`reservas-db`, `reservas-api`) y entregue una IP virtual (ClusterIP). Esto resolverá de forma definitiva los errores `ENOTFOUND` y `host not found in upstream` causados por la naturaleza efímera de las IPs de los Pods.
+* **Controladores `Deployment` (Disponibilidad y Resiliencia):** Falta la entidad supervisora que mantenga el estado deseado de la aplicación (ej. `replicas: 3`), gestione la autorreparación ante caídas de nodos y resucite Pods eliminados.
+* **Sondas de Salud (`readinessProbe` / `livenessProbe`):** Falta la configuración de comprobaciones de estado para que Kubernetes determine cuándo la base de datos o la API están listas para recibir tráfico (reemplazando a `depends_on`).
+* **Volúmenes Persistentes (`PersistentVolume` / `PVC`):** Falta desacoplar el almacenamiento de datos de la base MySQL del ciclo de vida del Pod para garantizar la conservación de datos ante la recreación del recurso.

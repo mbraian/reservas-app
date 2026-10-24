@@ -2,6 +2,7 @@
 # Etapa 1: Dependencias (deps)
 # ========================================================
 FROM node:20-alpine AS build
+# FROM --platform=$BUILDPLATFORM node:20-alpine AS build # Usado para compilar y pushear la imagen en MAC para que la utilice un nodo con otra arquitectura
 
 WORKDIR /app
 

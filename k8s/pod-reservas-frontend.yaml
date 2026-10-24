@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: reservas-frontend
+  name: reservas-frontend
+spec:
+  containers:
+  - image: mbraian/reservas-frontend:v1
+    name: reservas-frontend
+    # ports:
+    #   - containerPort: 8080
+    env:
+      - name: API_HOST
+        value: "reservas-api"
+      - name: API_PORT
+        value: "3000"
+    resources: {}
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+status: {}
