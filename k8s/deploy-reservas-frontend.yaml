@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: reservas-frontend
+  name: reservas-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: reservas-frontend
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: reservas-frontend
+    spec:
+      containers:
+      - image: mbraian/reservas-frontend:v1
+        name: reservas-frontend
+        ports:
+          - containerPort: 8080
+        env:
+          - name: API_HOST
+            value: "reservas-api"
+          - name: API_PORT
+            value: "3000"
+        resources: {}
+status: {}

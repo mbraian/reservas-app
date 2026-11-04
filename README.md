@@ -343,3 +343,46 @@ A continuación, se sintetizan las equivalencias, cambios y vacíos arquitectón
 * **Controladores `Deployment` (Disponibilidad y Resiliencia):** Falta la entidad supervisora que mantenga el estado deseado de la aplicación (ej. `replicas: 3`), gestione la autorreparación ante caídas de nodos y resucite Pods eliminados.
 * **Sondas de Salud (`readinessProbe` / `livenessProbe`):** Falta la configuración de comprobaciones de estado para que Kubernetes determine cuándo la base de datos o la API están listas para recibir tráfico (reemplazando a `depends_on`).
 * **Volúmenes Persistentes (`PersistentVolume` / `PVC`):** Falta desacoplar el almacenamiento de datos de la base MySQL del ciclo de vida del Pod para garantizar la conservación de datos ante la recreación del recurso.
+
+---
+
+## Semana 6
+### Punto 3: Verificación de Selectores y Endpoints (`kubectl get endpoints`)
+Se ejecutó la inspección de puntos de enlace para validar que los Servicios descubran y enruten tráfico hacia los Pods correspondientes:
+```
+bash kubectl get endpoints -n reservas-app
+```
+Salida registrada
+```
+NAME ENDPOINTS AGE
+reservas-api 10.244.0.50:3000,10.244.0.51:3000 6m59s
+reservas-db 10.244.0.49:3306 78m
+reservas-frontend 10.244.0.54:8080,10.244.0.55:8080 77m
+```
+
+### Punto 5: Service NodePort de Depuración (`reservas-api-nodeport`)
+Se creó un servicio de depuración `reservas-api-nodeport` (de tipo NodePort) en el puerto `30501` para auditar de forma directa la salud de la API sin pasar por la capa del frontend:
+>**Este objeto no formará parte del chart de la semana 8**
+```
+bash kubectl apply -f k8s/svc-reservas-api-nodeport.yaml
+curl -s http://<IP_del-nodo>:35801/health
+```
+
+### Punto 9: Documentar la Limitación Declarada de Persistencia (`reservas-db`)
+Se realizó la prueba de destrucción controlada del Pod de la base de datos para evaluar la sobrevivencia de la información:
+```bash
+kubectl delete pod -l app=reservas-db -n reservas-app
+kubectl exec deploy/reservas-db -n reservas-app -- \
+mysql -ureservas_user -preservas_pass reservasdb -e \
+"SELECT COUNT(*) FROM reservas WHERE sala_id=1 AND fecha='2026-12-01' AND franja=5;"
+```
+**Salida registrada:** `ERROR 1146 (42S02) at line 1: Table 'reservasdb.reservas' doesn't exist`
+
+**Conclusión y Limitación Conocida:**
+
+* **Almacenamiento Efímero:** El objeto `Deployment` garantiza la alta disponibilidad del proceso (reponiendo la instancia en caso de falla), pero **no provee almacenamiento persistente por sí solo**. Al borrar el Pod, el volumen efímero `/var/lib/mysql` se borra completamente, destruyendo tanto los registros como las tablas del motor.
+* **Restricción de Escalado:** `reservas-db` debe permanecer en **1 única réplica**. Escalar este Deployment crearía múltiples instancias aisladas de MySQL sin replicación entre sí, derivando en inconsistencia de datos.
+* **Resolución Futura:** Esta limitación queda declarada de forma explícita en la Semana 6 y se resolverá en la **Semana 7** mediante la incorporación de **Persistent Volume Claims (PVC)** y **Persistent Volumes (PV)**.
+
+
+---

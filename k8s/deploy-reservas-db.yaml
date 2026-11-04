@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: reservas-db
+  name: reservas-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reservas-db
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app: reservas-db
+    spec:
+      containers:
+      - image: mysql:8.4
+        name: reservas-db
+        ports:
+          - containerPort: 3306
+        env:
+          - name: MYSQL_ROOT_PASSWORD
+            value: "reservas_root_pass"
+          - name: MYSQL_DATABASE
+            value: "reservasdb"
+          - name: MYSQL_USER
+            value: "reservas_user"
+          - name: MYSQL_PASSWORD
+            value: "reservas_pass"
+        resources: {}
+status: {}

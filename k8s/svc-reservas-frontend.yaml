@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: reservas-frontend
+  name: reservas-frontend
+spec:
+  ports:
+  - name: 8080-8080
+    nodePort: 30301
+    port: 8080
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app: reservas-frontend
+  type: NodePort
+status:
+  loadBalancer: {}
